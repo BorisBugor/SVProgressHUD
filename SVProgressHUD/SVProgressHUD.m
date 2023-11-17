@@ -13,6 +13,7 @@
 #import "SVIndefiniteAnimatedView.h"
 #import "SVProgressAnimatedView.h"
 #import "SVRadialGradientLayer.h"
+#import "Lottie-Swift.h"
 
 NSString * const SVProgressHUDDidReceiveTouchEventNotification = @"SVProgressHUDDidReceiveTouchEventNotification";
 NSString * const SVProgressHUDDidTouchDownInsideNotification = @"SVProgressHUDDidTouchDownInsideNotification";
@@ -45,6 +46,7 @@ static const CGFloat SVProgressHUDLabelSpacing = 8.0f;
 @property (nonatomic, strong) UIImageView *imageView;
 
 @property (nonatomic, strong) UIView *indefiniteAnimatedView;
+@property (nonatomic, strong) CompatibleAnimationView *lotAnimationView;
 @property (nonatomic, strong) SVProgressAnimatedView *ringView;
 @property (nonatomic, strong) SVProgressAnimatedView *backgroundRingView;
 
@@ -259,6 +261,197 @@ static const CGFloat SVProgressHUDLabelSpacing = 8.0f;
     [[self sharedView] showProgress:progress status:status];
 }
 
++ (void)showAnimationWithName:(NSString *)animationName {
+    [[self sharedView] showAnimationWithName: animationName];
+}
+
+- (void)showAnimationWithName:(NSString *)animationName {
+    __weak SVProgressHUD *weakSelf = self;
+    [self updateViewHierachy];
+    [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+        __strong SVProgressHUD *strongSelf = weakSelf;
+        if(strongSelf){
+            // Update / Check view hierachy to ensure the HUD is visible
+            //            [strongSelf updateViewHierachy];
+            
+            // Reset imageView and fadeout timer if an image is currently displayed
+            strongSelf.imageView.hidden = YES;
+            strongSelf.imageView.image = nil;
+            
+            if(strongSelf.fadeOutTimer) {
+                strongSelf.activityCount = 0;
+            }
+            strongSelf.fadeOutTimer = nil;
+            
+            strongSelf.statusLabel.text = @"";
+            strongSelf.progress = -1;
+            
+            [strongSelf updateHUDFrame];
+            [strongSelf positionHUD: nil];
+            [strongSelf cancelIndefiniteAnimatedViewAnimation];
+            [strongSelf cancelRingLayerAnimation];
+            
+            CompatibleAnimationView *lotView = [[CompatibleAnimationView alloc] init];
+            NSBundle *bundle = [NSBundle bundleForClass:[SVProgressHUD class]];
+            CompatibleAnimation *animation = [[CompatibleAnimation alloc]
+                                              initWithName:animationName bundle:bundle];
+            
+            [strongSelf setLotAnimationView:lotView];
+            
+            [lotView setCompatibleAnimation:animation];
+            [lotView setContentMode:UIViewContentModeScaleAspectFit];
+            [lotView setLoopAnimationCount:-1];
+            [lotView setContentMode: UIViewContentModeScaleAspectFit];
+            [lotView setAnimationSpeed:2.0f];
+            [strongSelf.hudView addSubview:lotView];
+            
+            [NSLayoutConstraint activateConstraints:@[
+               [lotView.leftAnchor constraintEqualToAnchor:[strongSelf.hudView leftAnchor]],
+               [lotView.rightAnchor constraintEqualToAnchor:[strongSelf.hudView rightAnchor]],
+               [lotView.topAnchor constraintEqualToAnchor:[strongSelf.hudView topAnchor]],
+               [lotView.bottomAnchor constraintEqualToAnchor:[strongSelf.hudView bottomAnchor]],
+            ]];
+            
+            [lotView play];
+            
+            strongSelf.activityCount++;
+            [strongSelf showStatus:@""];
+        }
+    }];
+}
+
+- (void)showStatus:(NSString*)status {
+    // Update the HUDs frame to the new content and position HUD
+    [self updateHUDFrame];
+    [self positionHUD:nil];
+    
+    // Update accesibilty as well as user interaction
+    if(self.defaultMaskType != SVProgressHUDMaskTypeNone) {
+        self.controlView.userInteractionEnabled = YES;
+        self.accessibilityLabel = status;
+        self.isAccessibilityElement = YES;
+    } else {
+        self.controlView.userInteractionEnabled = NO;
+        self.hudView.accessibilityLabel = status;
+        self.hudView.isAccessibilityElement = YES;
+    }
+    
+    // Show overlay
+    self.controlView.backgroundColor = [UIColor clearColor];
+    
+    // Show if not already visible (depending on alpha)
+    if(self.alpha != 1.0f || self.hudView.alpha != 1.0f) {
+        // Post notification to inform user
+        [[NSNotificationCenter defaultCenter] postNotificationName:SVProgressHUDWillAppearNotification
+                                                            object:self
+                                                          userInfo:[self notificationUserInfo]];
+        
+        // Zoom HUD a little to make a nice appear / pop up animation
+        self.hudView.transform = CGAffineTransformScale(self.hudView.transform, 1.3, 1.3);
+        
+        // Set initial values to handle iOS 7 (and above) UIToolbar which not answers well to hierarchy opacity change
+        self.alpha = 0.0f;
+        self.hudView.alpha = 0.0f;
+        
+        // Define blocks
+        __weak SVProgressHUD *weakSelf = self;
+        
+        __block void (^animationsBlock)(void) = ^{
+            __strong SVProgressHUD *strongSelf = weakSelf;
+            if(strongSelf) {
+                // Shrink HUD to finish pop up animation
+                strongSelf.hudView.transform = CGAffineTransformScale(strongSelf.hudView.transform, 1/1.3f, 1/1.3f);
+                strongSelf.alpha = 1.0f;
+                strongSelf.hudView.alpha = 1.0f;
+            }
+        };
+        
+        __block void (^completionBlock)(void) = ^{
+            __strong SVProgressHUD *strongSelf = weakSelf;
+            if(strongSelf) {
+                /// Register observer <=> we now have to handle orientation changes etc.
+                [strongSelf registerNotifications];
+                
+                // Post notification to inform user
+                [[NSNotificationCenter defaultCenter] postNotificationName:SVProgressHUDDidAppearNotification
+                                                                    object:strongSelf
+                                                                  userInfo:[strongSelf notificationUserInfo]];
+            }
+            
+            // Update accesibilty
+            UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, nil);
+            UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, status);
+        };
+        
+        if (self.fadeInAnimationDuration > 0) {
+            // Animate appearance
+            [UIView animateWithDuration:self.fadeInAnimationDuration
+                                  delay:0
+                                options:(UIViewAnimationOptions) (UIViewAnimationOptionAllowUserInteraction | UIViewAnimationCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState)
+                             animations:^{
+                animationsBlock();
+            } completion:^(BOOL finished) {
+                completionBlock();
+            }];
+        } else {
+            animationsBlock();
+            completionBlock();
+        }
+        
+        // Inform iOS to redraw the view hierachy
+        [self setNeedsDisplay];
+        
+        if ([self.controlView.superview isKindOfClass: [UITableView class]]) {
+            UITableView *table = (UITableView *)self.controlView.superview;
+            self.hudView.frame = CGRectMake(
+                                            self.hudView.frame.origin.x,
+                                            self.hudView.frame.origin.y + table.contentOffset.y,
+                                            self.hudView.frame.size.width,
+                                            self.hudView.frame.size.height
+                                            );
+        }
+    }
+}
+
+- (void)updateViewHierachy {
+    // Add the overlay (e.g. black, gradient) to the application window if necessary
+    if(!self.controlView.superview) {
+#if !defined(SV_APP_EXTENSIONS)
+        // Default case: iterate over UIApplication windows
+        NSEnumerator *frontToBackWindows = [UIApplication.sharedApplication.windows reverseObjectEnumerator];
+        for (UIWindow *window in frontToBackWindows) {
+            BOOL windowOnMainScreen = window.screen == UIScreen.mainScreen;
+            BOOL windowIsVisible = !window.hidden && window.alpha > 0;
+            BOOL windowLevelNormal = window.windowLevel == UIWindowLevelNormal;
+            
+            if(windowOnMainScreen && windowIsVisible && windowLevelNormal) {
+                [window addSubview:self.controlView];
+                break;
+            }
+        }
+#else
+        // If SVProgressHUD ist used inside an app extension add it to the given view
+        if(self.viewForExtension) {
+            [self.viewForExtension addSubview:self.overlayView];
+        }
+#endif
+    } else {
+        // The HUD is already on screen, but maybot not in front. Therefore
+        // ensure that overlay will be on top of rootViewController (which may
+        // be changed during runtime).
+        [self.controlView.superview bringSubviewToFront:self.controlView];
+    }
+    
+    
+    // Add self to the overlay view
+    if(!self.superview){
+        [self.controlView addSubview:self];
+    }
+    if(!self.hudView.superview) {
+        [self addSubview:self.hudView];
+    }
+}
+
 
 #pragma mark - Show, then automatically dismiss methods
 
@@ -311,6 +504,17 @@ static const CGFloat SVProgressHUDLabelSpacing = 8.0f;
 
 + (void)dismiss {
     [self dismissWithDelay:0.0 completion:nil];
+}
+
++ (void)dismissFromView:(UIView *)view {
+    NSArray *subviews = view.subviews;
+    for (UIView *subview in subviews) {
+        if ([subview.restorationIdentifier  isEqual: @"SVProgressHUD"]) {
+            SVProgressHUD *hud = [subview.subviews firstObject];
+            [hud dismiss];
+            [subview removeFromSuperview];
+        }
+    }
 }
 
 + (void)dismissWithCompletion:(SVProgressHUDDismissCompletion)completion {
@@ -1125,6 +1329,11 @@ static const CGFloat SVProgressHUDLabelSpacing = 8.0f;
     }
     // Remove from view
     [self.indefiniteAnimatedView removeFromSuperview];
+  
+    if (self.lotAnimationView.superview != nil) {
+        [self.lotAnimationView stop];
+        [self.lotAnimationView removeFromSuperview];
+    }
 }
 
 

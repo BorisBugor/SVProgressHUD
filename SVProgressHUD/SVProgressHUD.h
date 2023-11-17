@@ -348,6 +348,9 @@ typedef void (^SVProgressHUDDismissCompletion)(void);
 /// @param status The error message to be displayed.
 + (void)showErrorWithStatus:(nullable NSString*)status;
 
+/// shows a image + status, use 28x28 white PNGs
+- (void)showAnimationWithName:(nullable NSString*)animationName;
+
 /// Shows a custom image with the provided status message.
 /// @param image The custom image to be displayed.
 /// @param status The message to accompany the custom image.
@@ -365,6 +368,9 @@ typedef void (^SVProgressHUDDismissCompletion)(void);
 
 /// Dismisses the HUD immediately.
 + (void)dismiss;
+
+/// Dismisses the HUD immediately.
++ (void)dismissFromView:(nonnull UIView*)view;
 
 /// Dismisses the HUD and triggers a completion block.
 /// @param completion A block that gets executed after the HUD is dismissed.
